@@ -1,3 +1,9 @@
+---
+name: hodlmm-risk-agent
+skill: hodlmm-risk
+description: "HODLMM volatility risk monitor — regime classification and LP safety signals for Bitflow HODLMM pools. Read-only; no wallet required."
+---
+
 # Agent Behavior — HODLMM Risk
 
 ## Decision order
@@ -23,19 +29,62 @@
 
 All commands return structured JSON to stdout.
 
+**assess-pool output:**
+```json
+{
+  "network": "mainnet",
+  "poolId": "string",
+  "activeBinId": "number",
+  "totalBins": "number",
+  "binSpread": "number",
+  "reserveImbalanceRatio": "number",
+  "volatilityScore": "number (0-100)",
+  "regime": "calm | elevated | crisis",
+  "signals": {
+    "safeToAddLiquidity": "boolean",
+    "recommendedBinWidth": "number (3 | 7 | 15)",
+    "maxExposurePct": "number (0.25 | 0.10 | 0.0)"
+  },
+  "timestamp": "ISO 8601"
+}
+```
+
+**assess-position output:**
+```json
+{
+  "network": "mainnet",
+  "poolId": "string",
+  "address": "string",
+  "positionBinCount": "number",
+  "activeBinId": "number",
+  "nearestPositionBinOffset": "number",
+  "avgBinOffset": "number",
+  "concentrationRisk": "high | medium | low",
+  "driftScore": "number (0-100)",
+  "impermanentLossEstimatePct": "number",
+  "recommendation": "hold | rebalance | withdraw",
+  "timestamp": "ISO 8601"
+}
+```
+
+**regime-snapshot output:**
 ```json
 {
   "network": "mainnet",
   "poolId": "string",
   "volatilityScore": "number (0-100)",
   "regime": "calm | elevated | crisis",
+  "activeBinId": "number",
+  "binSpread": "number",
+  "reserveImbalanceRatio": "number",
+  "note": "string",
   "timestamp": "ISO 8601"
 }
 ```
 
 ## On error
 
-- Errors are returned as JSON with descriptive messages.
+- Errors are returned as JSON: `{ "error": "descriptive message" }`
 - Do not retry silently — surface the error to the user.
 - Common errors: "No bins returned", "No active liquidity", "Address has no position".
 - Network must be mainnet; testnet calls will fail with a clear error.
