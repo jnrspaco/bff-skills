@@ -7,7 +7,7 @@ metadata:
   user-invocable: "false"
   arguments: "doctor | compare | run"
   entry: "hodlmm-capital-router-v2/hodlmm-capital-router-v2.ts"
-  requires: "wallet, signing, settings"
+  requires: "wallet, signing, settings, AIBTC_WALLET_ID, WALLET_PASSWORD"
   tags: "defi, write, mainnet-only, requires-funds, l2"
 ---
 

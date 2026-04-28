@@ -9,7 +9,7 @@ const BITFLOW_TICKER = "https://bitflow-sdk-api-gateway-7owjsmt8.uc.gateway.dev/
 const MAX_SATS = 100_000;
 const MIN_APY_DELTA = 0.5;
 const ZEST_BASE_APY = 3.5;
-const WALLET_ID = "612c9855-a121-4e4a-9122-33ccca8fb415";
+const WALLET_ID = process.env.AIBTC_WALLET_ID ?? "";
 
 function log(msg: string) { process.stderr.write(msg + "\n"); }
 function safeJson(text: string): any {
@@ -159,7 +159,9 @@ class McpClient {
 
 async function unlockWallet(client: McpClient): Promise<string> {
   const password = process.env.WALLET_PASSWORD ?? "";
-  await client.callTool("wallet_switch", { walletId: WALLET_ID });
+  const walletId = process.env.AIBTC_WALLET_ID ?? "";
+  if (!walletId) throw new Error("AIBTC_WALLET_ID not set — export AIBTC_WALLET_ID=your-wallet-uuid");
+  await client.callTool("wallet_switch", { walletId });
   await wait(1000);
   const unlockRaw = await client.callTool("wallet_unlock", { password });
   const unlock = safeJson(unlockRaw?.content?.[0]?.text ?? "{}");
@@ -251,7 +253,12 @@ program.command("compare")
 program.command("run")
   .description("Execute capital routing on-chain and return real txid")
   .requiredOption("--amount <number>", "Amount in satoshis (max 100000)")
+  .requiredOption("--confirm <string>", "Must be ROUTE to execute")
   .action(async (opts) => {
+    if (opts.confirm !== "ROUTE") {
+      console.log(JSON.stringify({ status: "blocked", action: "pass --confirm ROUTE to execute", data: {}, error: { code: "CONFIRMATION_REQUIRED", message: "explicit confirmation required: --confirm ROUTE", next: "rerun with --confirm ROUTE" } }));
+      return;
+    }
     const amount = parseInt(opts.amount);
     if (isNaN(amount) || amount <= 0) {
       console.log(JSON.stringify({ status: "error", action: "provide valid positive satoshi amount", data: {}, error: { code: "INVALID_AMOUNT", message: "amount must be positive integer", next: "retry with --amount 1000" } }));
@@ -294,7 +301,7 @@ program.command("run")
         log(`Routing to Zest via zest_supply...`);
         const supplyRaw = await client.callTool("zest_supply", {
           amount: amount.toString(),
-          asset: "wSTX",
+          asset: "sBTC",
         }, 120000);
         rawResponse = supplyRaw?.content?.[0]?.text ?? "{}";
         const supplyJson = safeJson(rawResponse);
