@@ -308,12 +308,12 @@ program.command("run")
         txid = supplyJson?.txid ?? supplyJson?.tx_id ?? rawResponse.match(/0x[a-f0-9]{64}/i)?.[0] ?? null;
       } else {
         log(`Routing to HODLMM via stacks_call_contract...`);
-        const callRaw = await client.callTool("stacks_call_contract", {
-          contractAddress: "SP1Y5YSTAHZ88XYK1VPDH24GY0HPX5J4JECTMY4A1",
-          contractName: "hodlmm-v1-0",
-          functionName: "add-liquidity",
-          functionArgs: [amount.toString()],
-        }, 120000);
+const callRaw = await client.callTool("stacks_call_contract", {
+  contractAddress: "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD",
+  contractName: "dlmm-liquidity-router-v-1-1",
+  functionName: "move-relative-liquidity-multi",
+  functionArgs: [amount.toString()],
+}, 120000);
         rawResponse = callRaw?.content?.[0]?.text ?? "{}";
         const callJson = safeJson(rawResponse);
         txid = callJson?.txid ?? callJson?.tx_id ?? rawResponse.match(/0x[a-f0-9]{64}/i)?.[0] ?? null;
