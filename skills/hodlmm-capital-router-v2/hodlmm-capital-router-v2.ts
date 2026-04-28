@@ -1,5 +1,7 @@
 import { Command } from "commander";
 import * as https from "https";
+import * as fs from "fs";
+import * as path from "path";
 import { spawn } from "child_process";
 
 const program = new Command();
@@ -9,7 +11,12 @@ const BITFLOW_TICKER = "https://bitflow-sdk-api-gateway-7owjsmt8.uc.gateway.dev/
 const MAX_SATS = 100_000;
 const MIN_APY_DELTA = 0.5;
 const ZEST_BASE_APY = 3.5;
-const WALLET_ID = process.env.AIBTC_WALLET_ID ?? "";
+
+const LOCK_FILE = path.join(
+  process.env.HOME || process.env.USERPROFILE || ".",
+  ".aibtc",
+  "hodlmm-router.lock"
+);
 
 function log(msg: string) { process.stderr.write(msg + "\n"); }
 function safeJson(text: string): any {
@@ -17,6 +24,24 @@ function safeJson(text: string): any {
 }
 function wait(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
+}
+
+function acquireLock(): boolean {
+  try {
+    const dir = path.dirname(LOCK_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (fs.existsSync(LOCK_FILE)) {
+      const lockAge = Date.now() - fs.statSync(LOCK_FILE).mtimeMs;
+      if (lockAge < 300_000) return false;
+      fs.unlinkSync(LOCK_FILE);
+    }
+    fs.writeFileSync(LOCK_FILE, Date.now().toString());
+    return true;
+  } catch { return false; }
+}
+
+function releaseLock() {
+  try { if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE); } catch (_) {}
 }
 
 function httpGet(url: string): Promise<any> {
@@ -32,6 +57,17 @@ function httpGet(url: string): Promise<any> {
     req.setTimeout(10000, () => { req.destroy(); reject(new Error("Timeout")); });
     req.on("error", reject);
   });
+}
+
+async function verifyTx(txid: string): Promise<string> {
+  try {
+    await wait(5000);
+    const cleanTxid = txid.startsWith("0x") ? txid : `0x${txid}`;
+    const json = await httpGet(`${HIRO_API}/extended/v1/tx/${cleanTxid}`);
+    return json?.tx_status ?? "pending";
+  } catch {
+    return "pending";
+  }
 }
 
 async function getSBTCBalance(address: string): Promise<number> {
@@ -169,7 +205,7 @@ async function unlockWallet(client: McpClient): Promise<string> {
   await wait(500);
   const statusRaw = await client.callTool("wallet_status", {});
   const status = safeJson(statusRaw?.content?.[0]?.text ?? "{}");
-  return status?.wallet?.address ?? "SP2DQHGKS3VFDY50HMGPYEWRSA3PA2H3QDPEGBNAK";
+  return status?.wallet?.address ?? "";
 }
 
 program.name("hodlmm-capital-router-v2").description("Route sBTC between HODLMM and Zest with real on-chain execution");
@@ -179,6 +215,10 @@ program.command("doctor")
   .action(async () => {
     if (!process.env.WALLET_PASSWORD) {
       console.log(JSON.stringify({ status: "error", action: "set WALLET_PASSWORD environment variable", data: {}, error: { code: "MISSING_PASSWORD", message: "WALLET_PASSWORD not set", next: "export WALLET_PASSWORD=your-password" } }));
+      return;
+    }
+    if (!process.env.AIBTC_WALLET_ID) {
+      console.log(JSON.stringify({ status: "error", action: "set AIBTC_WALLET_ID environment variable", data: {}, error: { code: "MISSING_WALLET_ID", message: "AIBTC_WALLET_ID not set", next: "export AIBTC_WALLET_ID=your-wallet-uuid" } }));
       return;
     }
     const client = new McpClient();
@@ -214,7 +254,7 @@ program.command("doctor")
         error: null,
       }));
     } catch (err: any) {
-      console.log(JSON.stringify({ status: "error", action: "check WALLET_PASSWORD and MCP", data: {}, error: { code: "DOCTOR_FAILED", message: err.message, next: "retry after 30s" } }));
+      console.log(JSON.stringify({ status: "error", action: "check WALLET_PASSWORD, AIBTC_WALLET_ID and MCP", data: {}, error: { code: "DOCTOR_FAILED", message: err.message, next: "retry after 30s" } }));
     } finally {
       client.stop();
     }
@@ -272,6 +312,16 @@ program.command("run")
       console.log(JSON.stringify({ status: "error", action: "set WALLET_PASSWORD environment variable", data: {}, error: { code: "MISSING_PASSWORD", message: "WALLET_PASSWORD not set", next: "export WALLET_PASSWORD=your-password" } }));
       return;
     }
+    if (!process.env.AIBTC_WALLET_ID) {
+      console.log(JSON.stringify({ status: "error", action: "set AIBTC_WALLET_ID environment variable", data: {}, error: { code: "MISSING_WALLET_ID", message: "AIBTC_WALLET_ID not set", next: "export AIBTC_WALLET_ID=your-wallet-uuid" } }));
+      return;
+    }
+
+    // Acquire lock to prevent concurrent executions
+    if (!acquireLock()) {
+      console.log(JSON.stringify({ status: "blocked", action: "another instance is running — wait and retry", data: {}, error: { code: "LOCK_ACTIVE", message: "lock file exists — concurrent execution prevented", next: "retry in 60 seconds" } }));
+      return;
+    }
 
     const client = new McpClient();
     try {
@@ -282,6 +332,7 @@ program.command("run")
       if (balance < amount) {
         console.log(JSON.stringify({ status: "blocked", action: "fund wallet with sBTC", data: { balance_sats: balance, requested_sats: amount }, error: { code: "INSUFFICIENT_BALANCE", message: `balance ${balance} sats < requested ${amount}`, next: "deposit sBTC and retry" } }));
         client.stop();
+        releaseLock();
         return;
       }
 
@@ -291,6 +342,7 @@ program.command("run")
       if (!decision.should_route) {
         console.log(JSON.stringify({ status: "blocked", action: "hold — APY delta below threshold", data: { hodlmm_apy_pct: hodlmm.apy, zest_apy_pct: zest.apy, delta: decision.delta }, error: { code: "DELTA_TOO_SMALL", message: `delta ${decision.delta.toFixed(2)}% < min ${MIN_APY_DELTA}%`, next: "monitor and retry" } }));
         client.stop();
+        releaseLock();
         return;
       }
 
@@ -298,7 +350,7 @@ program.command("run")
       let rawResponse = "";
 
       if (decision.recommended === "zest") {
-        log(`Routing to Zest via zest_supply...`);
+        log(`Routing to Zest via zest_supply (sBTC)...`);
         const supplyRaw = await client.callTool("zest_supply", {
           amount: amount.toString(),
           asset: "sBTC",
@@ -307,19 +359,21 @@ program.command("run")
         const supplyJson = safeJson(rawResponse);
         txid = supplyJson?.txid ?? supplyJson?.tx_id ?? rawResponse.match(/0x[a-f0-9]{64}/i)?.[0] ?? null;
       } else {
-        log(`Routing to HODLMM via stacks_call_contract...`);
-const callRaw = await client.callTool("stacks_call_contract", {
-  contractAddress: "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD",
-  contractName: "dlmm-liquidity-router-v-1-1",
-  functionName: "move-relative-liquidity-multi",
-  functionArgs: [amount.toString()],
-}, 120000);
+        log(`Routing to HODLMM via dlmm-liquidity-router...`);
+        const callRaw = await client.callTool("stacks_call_contract", {
+          contractAddress: "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD",
+          contractName: "dlmm-liquidity-router-v-1-1",
+          functionName: "move-relative-liquidity-multi",
+          functionArgs: [amount.toString()],
+        }, 120000);
         rawResponse = callRaw?.content?.[0]?.text ?? "{}";
         const callJson = safeJson(rawResponse);
         txid = callJson?.txid ?? callJson?.tx_id ?? rawResponse.match(/0x[a-f0-9]{64}/i)?.[0] ?? null;
       }
 
       if (txid) {
+        // Post-broadcast verification
+        const txStatus = await verifyTx(txid);
         console.log(JSON.stringify({
           status: "success",
           action: `capital routed to ${decision.recommended.toUpperCase()} — verify: https://explorer.hiro.so/txid/${txid}`,
@@ -332,7 +386,7 @@ const callRaw = await client.callTool("stacks_call_contract", {
             apy_delta_pct: parseFloat(decision.delta.toFixed(2)),
             amount_sats: amount,
             amount_sbtc: amount / 1e8,
-            tx_status: "pending",
+            tx_status: txStatus,
             explorer_url: `https://explorer.hiro.so/txid/${txid}`,
           },
           error: null,
@@ -349,6 +403,7 @@ const callRaw = await client.callTool("stacks_call_contract", {
       console.log(JSON.stringify({ status: "error", action: "check MCP and retry", data: {}, error: { code: "ROUTING_FAILED", message: err.message, next: "run doctor to diagnose" } }));
     } finally {
       client.stop();
+      releaseLock();
     }
   });
 
