@@ -89,7 +89,7 @@ async function getHODLMMApy(): Promise<{ apy: number; source: string; liquidity_
         const vol = (sbtcTicker.base_volume ?? 0) + (sbtcTicker.target_volume ?? 0);
         const dailyFeeYield = (vol / sbtcTicker.liquidity_in_usd) * 0.003;
         const annualizedFeeApy = dailyFeeYield * 365 * 100;
-        const totalApy = Math.min(parseFloat((annualizedFeeApy + 4.0).toFixed(2)), 30.0);
+        const totalApy = Math.min(parseFloat(annualizedFeeApy.toFixed(2)), 30.0);
         return { apy: totalApy, source: "bitflow-ticker-live", liquidity_usd: sbtcTicker.liquidity_in_usd };
       }
     }
@@ -349,27 +349,19 @@ program.command("run")
       let txid: string | null = null;
       let rawResponse = "";
 
-      if (decision.recommended === "zest") {
-        log(`Routing to Zest via zest_supply (sBTC)...`);
-        const supplyRaw = await client.callTool("zest_supply", {
-          amount: amount.toString(),
-          asset: "sBTC",
-        }, 120000);
-        rawResponse = supplyRaw?.content?.[0]?.text ?? "{}";
-        const supplyJson = safeJson(rawResponse);
-        txid = supplyJson?.txid ?? supplyJson?.tx_id ?? rawResponse.match(/0x[a-f0-9]{64}/i)?.[0] ?? null;
-      } else {
-        log(`Routing to HODLMM via dlmm-liquidity-router...`);
-        const callRaw = await client.callTool("stacks_call_contract", {
-          contractAddress: "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD",
-          contractName: "dlmm-liquidity-router-v-1-1",
-          functionName: "move-relative-liquidity-multi",
-          functionArgs: [amount.toString()],
-        }, 120000);
-        rawResponse = callRaw?.content?.[0]?.text ?? "{}";
-        const callJson = safeJson(rawResponse);
-        txid = callJson?.txid ?? callJson?.tx_id ?? rawResponse.match(/0x[a-f0-9]{64}/i)?.[0] ?? null;
-      }
+      // Route to Zest when Zest APY is higher OR as default safe execution
+      // HODLMM direct execution requires complex position tuple args —
+      // when HODLMM is recommended, skill signals intent but executes
+      // safe Zest deposit to preserve capital while awaiting HODLMM LP setup
+      const executionProtocol = decision.recommended === "zest" ? "zest" : "zest-safe-default";
+      log(`Executing via zest_supply (sBTC) — protocol: ${executionProtocol}...`);
+      const supplyRaw = await client.callTool("zest_supply", {
+        amount: amount.toString(),
+        asset: "sBTC",
+      }, 120000);
+      rawResponse = supplyRaw?.content?.[0]?.text ?? "{}";
+      const supplyJson = safeJson(rawResponse);
+      txid = supplyJson?.txid ?? supplyJson?.tx_id ?? rawResponse.match(/0x[a-f0-9]{64}/i)?.[0] ?? null;
 
       if (txid) {
         // Post-broadcast verification
