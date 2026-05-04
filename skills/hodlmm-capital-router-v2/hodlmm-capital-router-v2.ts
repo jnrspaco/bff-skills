@@ -371,7 +371,8 @@ program.command("run")
           action: `capital routed to ${decision.recommended.toUpperCase()} — verify: https://explorer.hiro.so/txid/${txid}`,
           data: {
             txid,
-            protocol: decision.recommended,
+            execution_protocol: executionProtocol,
+            recommended_protocol: decision.recommended,
             routing_decision: decision.reason,
             hodlmm_apy_pct: hodlmm.apy,
             zest_apy_pct: zest.apy,
